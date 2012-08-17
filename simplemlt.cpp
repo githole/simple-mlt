@@ -79,6 +79,7 @@ struct Sphere {
 // *** レンダリングするシーンデータ ****
 // from small ppt
 Sphere spheres[] = {
+	Sphere(5.0, Vec(50.0, 75.0, 81.6),Color(12,12,12), Color(), DIFFUSE),//照明
 	Sphere(1e5, Vec( 1e5+1,40.8,81.6), Color(), Color(0.75, 0.25, 0.25),DIFFUSE),// 左
 	Sphere(1e5, Vec(-1e5+99,40.8,81.6),Color(), Color(0.25, 0.25, 0.75),DIFFUSE),// 右
 	Sphere(1e5, Vec(50,40.8, 1e5),     Color(), Color(0.75, 0.75, 0.75),DIFFUSE),// 奥
@@ -87,8 +88,8 @@ Sphere spheres[] = {
 	Sphere(1e5, Vec(50,-1e5+81.6,81.6),Color(), Color(0.75, 0.75, 0.75),DIFFUSE),// 天井
 	Sphere(16.5,Vec(27,16.5,47),       Color(), Color(1,1,1)*.99, SPECULAR),// 鏡
 	Sphere(16.5,Vec(73,16.5,78),       Color(), Color(1,1,1)*.99, REFRACTION),//ガラス
-	Sphere(5.0, Vec(50.0, 75.0, 81.6),Color(12,12,12), Color(), DIFFUSE),//照明
 };
+const int LightID = 0;
 
 // *** レンダリング用関数 ***
 // シーンとの交差判定関数
@@ -176,7 +177,7 @@ public:
 				}
 				primary_samples_stack.push(primary_samples[used_rand_coords]);
 				primary_samples[used_rand_coords].value = Mutate(primary_samples[used_rand_coords].value);
-				primary_samples[used_rand_coords].modify_time ++;
+				primary_samples[used_rand_coords].modify_time = global_time;
 			}
 		}
 
@@ -190,9 +191,41 @@ double luminance(const Color &color) {
 	return Dot(Vec(0.2126, 0.7152, 0.0722), color);
 }
 
+// 直接光を計算する
+Color direct_radiance(const Vec &v0, const Vec &normal, const int id, const Vec &light_pos) {
+	const Vec light_normal  = Normalize(light_pos - spheres[LightID].position);
+	const Vec light_dir = Normalize(light_pos - v0);
+	const double dist2 = (light_pos - v0).LengthSquared();
+	const double dot0 = Dot(normal, light_dir);
+	const double dot1 = Dot(light_normal, -1.0 * light_dir);
+
+	if (dot0 >= 0 && dot1 >= 0) {
+		const double G = dot0 * dot1 / dist2;
+		double t; // レイからシーンの交差位置までの距離
+		int id_;   // 交差したシーン内オブジェクトのID
+		intersect_scene(Ray(v0, light_dir), &t, &id_);
+		if (fabs(sqrt(dist2) - t) < 1e-3) {		
+			return Multiply(spheres[id].color, spheres[LightID].emission) * (1.0 / PI) * G / (1.0 / (4.0 * PI * pow(spheres[LightID].radius, 2.0)));
+		}
+	}
+	return Color();
+}
+
+// 光源上の点をサンプリングして直接光を計算する
+Color direct_radiance_sample(const Vec &v0, const Vec &normal, const int id, KelemenMLT &mlt) {
+	// 光源上の一点をサンプリングする
+	const double r1 = 2 * PI *  mlt.PrimarySample();
+	const double r2 = 1.0 - 2.0 *  mlt.PrimarySample();
+	const Vec light_pos = spheres[LightID].position + ((spheres[LightID].radius + EPS) * Vec(sqrt(1.0 - r2*r2) * cos(r1), sqrt(1.0 - r2*r2) * sin(r1), r2));
+
+	return direct_radiance(v0, normal, id, light_pos);
+}
+
 // ray方向からの放射輝度を求める
 // ただし、rand01()の代わりにKelemenMLT::PrimarySample()を使う。
 // それ以外は普通のパストレースと同じ。
+// ただし、各点で明示的に光源の影響をサンプリングして求める。（そのほうがMLTとの相性がよい？）
+// あるいは双方向パストレーシングにするのもよいと思う。
 Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 	double t; // レイからシーンの交差位置までの距離
 	int id;   // 交差したシーン内オブジェクトのID
@@ -215,33 +248,58 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 
 	switch (obj.ref_type) {
 	case DIFFUSE: {
-		// orienting_normalの方向を基準とした正規直交基底(w, u, v)を作る。この基底に対する半球内で次のレイを飛ばす。
-		Vec w, u, v;
-		w = orienting_normal;
-		if (fabs(w.x) > 0.1)
-			u = Normalize(Cross(Vec(0.0, 1.0, 0.0), w));
-		else
-			u = Normalize(Cross(Vec(1.0, 0.0, 0.0), w));
-		v = Cross(w, u);
-		// コサイン項を使った重点的サンプリング
-		const double r1 = 2 * PI * mlt.PrimarySample();
-		const double r2 = mlt.PrimarySample(), r2s = sqrt(r2);
-		Vec dir = Normalize((u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1.0 - r2)));
+		// 直接光のサンプリングを行う
+		if (id != LightID) {
+			const int shadow_ray = 1;
+			Vec direct_light;
+			for (int i = 0; i < shadow_ray; i ++) {
+				direct_light = direct_light + direct_radiance_sample(hitpoint, orienting_normal, id, mlt) / shadow_ray;
+			}
 
-		// レンダリング方程式に従えば Le + Li(ray) * BRDF * cosθ / pdf(ray) になる。
-		// ただし、上でコサイン項による重点的サンプリングをしたためpdf(ray) = cosθ/πになり、
-		// Diffuse面のBRDF = 1/πなので、これらを代入すると Le + Li(ray) となる。
-		// これにロシアンルーレットの確率を除算したものが最終的な計算式になる。
-		return obj.emission + Multiply(obj.color, radiance(Ray(hitpoint, dir), depth+1, mlt)) / russian_roulette_probability;
+			// orienting_normalの方向を基準とした正規直交基底(w, u, v)を作る。この基底に対する半球内で次のレイを飛ばす。
+			Vec w, u, v;
+			w = orienting_normal;
+			if (fabs(w.x) > 0.1)
+				u = Normalize(Cross(Vec(0.0, 1.0, 0.0), w));
+			else
+				u = Normalize(Cross(Vec(1.0, 0.0, 0.0), w));
+			v = Cross(w, u);
+			// コサイン項を使った重点的サンプリング
+			const double r1 = 2 * PI * mlt.PrimarySample();
+			const double r2 = mlt.PrimarySample(), r2s = sqrt(r2);
+			Vec dir = Normalize((u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1.0 - r2)));
+
+			return direct_light + Multiply(obj.color, radiance(Ray(hitpoint, dir), depth+1, mlt)) / russian_roulette_probability;
+		} else if (depth == 0) {
+			return obj.emission;
+		} else
+			return Color();
 	} break;
 	case SPECULAR: {
 		// 完全鏡面なのでレイの反射方向は決定的。
 		// ロシアンルーレットの確率で除算するのは上と同じ。
-		return obj.emission + Multiply(obj.color,
-			radiance(Ray(hitpoint, ray.dir - normal * 2.0 * Dot(normal, ray.dir)), depth+1, mlt)) / russian_roulette_probability;
+		// 直接光サンプリングする
+		double lt;
+		int lid;
+		Ray reflection_ray = Ray(hitpoint, ray.dir - normal * 2.0 * Dot(normal, ray.dir));
+		intersect_scene(reflection_ray, &lt, &lid);
+		Vec direct_light;
+		if (lid == LightID)
+			direct_light = direct_radiance(hitpoint, orienting_normal, id, reflection_ray.org + lt * reflection_ray.dir);
+
+		return direct_light + Multiply(obj.color, radiance(reflection_ray, depth+1, mlt)) / russian_roulette_probability;
 	} break;
 	case REFRACTION: {
 		Ray reflection_ray = Ray(hitpoint, ray.dir - normal * 2.0 * Dot(normal, ray.dir));
+		
+		// 反射方向からの直接光サンプリングする
+		double lt;
+		int lid;
+		intersect_scene(reflection_ray, &lt, &lid);
+		Vec direct_light;
+		if (lid == LightID)
+			direct_light = direct_radiance(hitpoint, orienting_normal, id, reflection_ray.org + lt * reflection_ray.dir);
+
 		bool into = Dot(normal, orienting_normal) > 0.0; // レイがオブジェクトから出るのか、入るのか
 
 		// Snellの法則
@@ -252,7 +310,7 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		const double cos2t = 1.0 - nnt * nnt * (1.0 - ddn * ddn);
 		
 		if (cos2t < 0.0) { // 全反射した
-			return obj.emission + Multiply(obj.color, (radiance(reflection_ray, depth+1, mlt))) / russian_roulette_probability;
+			return direct_light + Multiply(obj.color, (radiance(reflection_ray, depth+1, mlt))) / russian_roulette_probability;
 		}
 		// 屈折していく方向
 		Vec tdir = Normalize(ray.dir * nnt - normal * (into ? 1.0 : -1.0) * (ddn * nnt + sqrt(cos2t)));
@@ -264,28 +322,37 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		const double Re = R0 + (1.0 - R0) * pow(c, 5.0);
 		const double Tr = 1.0 - Re; // 屈折光の運ぶ光の量
 		const double probability  = 0.25 + 0.5 * Re;
+		
+		// 屈折方向からの直接光サンプリングする
+		Ray refraction_ray = Ray(hitpoint, tdir);
+		intersect_scene(refraction_ray, &lt, &lid);
+		Vec direct_light_refraction;
+		if (lid == LightID)
+			direct_light_refraction = direct_radiance(hitpoint, -1.0 * orienting_normal, id, refraction_ray.org + lt * refraction_ray.dir);
 
 		// 一定以上レイを追跡したら屈折と反射のどちらか一方を追跡する。（さもないと指数的にレイが増える）
 		// ロシアンルーレットで決定する。
 		if (depth > 2) {
 			if (mlt.PrimarySample() < probability) { // 反射
-				return obj.emission + 
+				return direct_light + 
 					Multiply(obj.color, radiance(reflection_ray, depth+1, mlt) * Re)
 					/ probability
 					/ russian_roulette_probability;
 			} else { // 屈折
-				return obj.emission + 
-					Multiply(obj.color, radiance(Ray(hitpoint, tdir), depth+1, mlt) * Tr)
+				return direct_light_refraction + 
+					Multiply(obj.color, radiance(refraction_ray, depth+1, mlt) * Tr)
 					/ (1.0 - probability) 
 					/ russian_roulette_probability;
 			}
 		} else { // 屈折と反射の両方を追跡
-			return obj.emission + 
+			return direct_light + direct_light_refraction +
 				Multiply(obj.color, radiance(reflection_ray, depth+1, mlt) * Re
-				                  + radiance(Ray(hitpoint, tdir), depth+1, mlt) * Tr) / russian_roulette_probability;
+				                  + radiance(refraction_ray, depth+1, mlt) * Tr) / russian_roulette_probability;
 		}
 	} break;
 	}
+
+	return Color();
 }
 
 // 上のパストレで生成したパスを保存しておく
@@ -336,6 +403,7 @@ void render_mlt(const int sample_num, Color *image, const Ray &camera, const Vec
 	double sumI = 0.0;
 	mlt.large_step = 1;
 	for (int i = 0; i < SeedPathMax; i ++) {
+		mlt.InitUsedRandCoords();
 		PathSample sample = generate_new_path(camera, cx, cy, width, height, mlt);
 		mlt.global_time ++;
 		while (!mlt.primary_samples_stack.empty()) // スタック空にする
@@ -362,16 +430,18 @@ void render_mlt(const int sample_num, Color *image, const Ray &camera, const Vec
 
 	// メトロポリス法
 	std::cout << "Metropolis..." << std::endl;
-	const double p_large = 0.2;
+	const double p_large = 0.5;
 	const int M = sample_num;
+	int accept = 0, reject = 0;
 	PathSample old_path = seed_paths[selecetd_path];
 	for (int i = 0; i < M; i ++) {
-		if ((i+1) % (M/10) == 0)
+		if ((i+1) % (M/10) == 0) {
 			std::cout << "*";
+		}
 
 		// この辺も全部論文と同じ（Next()）
 		mlt.large_step = rand01() < p_large;
-		mlt.InitUsedRandCoords();
+		mlt.InitUsedRandCoords();	
 		PathSample new_path = generate_new_path(camera, cx, cy, width, height, mlt);
 
 		double a = std::min(1.0, luminance(new_path.F) / luminance(old_path.F));
@@ -383,6 +453,7 @@ void render_mlt(const int sample_num, Color *image, const Ray &camera, const Vec
 		image[old_path.y * width + old_path.x] = image[old_path.y * width + old_path.x] + old_path.weight * old_path_weight * old_path.F;
 
 		if (rand01() < a) { // 受理
+			accept ++;
 			old_path = new_path;
 			if (mlt.large_step)
 				mlt.large_step_time = mlt.global_time;
@@ -390,13 +461,15 @@ void render_mlt(const int sample_num, Color *image, const Ray &camera, const Vec
 			while (!mlt.primary_samples_stack.empty()) // スタック空にする
 				mlt.primary_samples_stack.pop();
 		} else { // 棄却
+			reject ++;
 			int idx = mlt.used_rand_coords - 1;
 			while (!mlt.primary_samples_stack.empty()) {
-				mlt.primary_samples[idx --] = mlt. primary_samples_stack.top();
+				mlt.primary_samples[idx --] = mlt.primary_samples_stack.top();
 				mlt.primary_samples_stack.pop();
 			}
 		}
 	}
+	std::cout << "Accept: " << accept << " Reject: " << reject << std::endl;
 }
 
 // *** .hdrフォーマットで出力するための関数 ***
@@ -468,7 +541,7 @@ void save_hdr_file(const std::string &filename, const Color* image, const int wi
 int main(int argc, char **argv) {
 	int width = 640;
 	int height = 480;
-	int mutation_per_pixel_per_oneimage = 4;
+	int mutation_per_pixel_per_oneimage = 8;
 	int split = 1; // OpenMPのスレッド数とかにするといい
 
 	std::cout << "Mutation per pixel per one image: " << mutation_per_pixel_per_oneimage << std::endl;
@@ -482,7 +555,7 @@ int main(int argc, char **argv) {
 	Color *result = new Color[width * height];
 	
 // OpenMP
-// #pragma omp parallel for schedule(dynamic, 1)
+#pragma omp parallel for schedule(dynamic, 1)
 	// split個のMLTを別々に実行し、その結果の平均をとる
 	for (int i = 0; i < split; i ++) {
 		srand(i * i);
