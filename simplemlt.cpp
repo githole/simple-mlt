@@ -120,7 +120,7 @@ struct PrimarySample {
 	}
 };
 
-const double MutateDistance = 0.03;
+const double MutateDistance = 0.05;
 
 // Kelemen MLTにおいて、パス生成に使う各種乱数はprimary spaceからもってくる。
 // PrimarySample()を通常のrand01()の代わりに使ってパス生成する。今回は普通のパストレースを使った。（双方向パストレ等も使える）
@@ -367,18 +367,23 @@ struct PathSample {
 
 // MLTのために新しいパスをサンプリングする関数。
 // 今回はradiance()（パストレ）を使ったが何でもいい。
-PathSample generate_new_path(const Ray &camera, const Vec &cx, const Vec &cy, const int width, const int height, KelemenMLT &mlt) {
-	int x, y;
-	
-	x = mlt.PrimarySample() * width;
-	if (x == width)
-		x = 0;
-	y = mlt.PrimarySample() * height;
-	if (y == height)
-		y = 0;
+PathSample generate_new_path(const Ray &camera, const Vec &cx, const Vec &cy, const int width, const int height, KelemenMLT &mlt, int x, int y) {
+	double weight = 4.0;
+	if (x < 0) {
+		weight *= width;
+		x = mlt.PrimarySample() * width;
+		if (x == width)
+			x = 0;
+	}
+	if (y < 0) {
+		weight *= height;
+		y = mlt.PrimarySample() * height;
+		if (y == height)
+			y = 0;
+	}
 	int sx = mlt.PrimarySample() < 0.5 ? 0 : 1;
 	int sy = mlt.PrimarySample() < 0.5 ? 0 : 1;
-
+	
 	// テントフィルターによってサンプリング
 	// ピクセル範囲で一様にサンプリングするのではなく、ピクセル中央付近にサンプルがたくさん集まるように偏りを生じさせる
 	const double r1 = 2.0 * mlt.PrimarySample(), dx = r1 < 1.0 ? sqrt(r1) - 1.0 : 1.0 - sqrt(2.0 - r1);
@@ -388,88 +393,95 @@ PathSample generate_new_path(const Ray &camera, const Vec &cx, const Vec &cy, co
 	const Ray ray = Ray(camera.org + dir * 130.0, Normalize(dir));
 
 	Color c = radiance(ray, 0, mlt);
-	return PathSample(x, y, c, 1.0 / (1.0 / (width * height * 4)));
+
+	return PathSample(x, y, c, 1.0 / (1.0 / weight));
 }
 
 // MLTする
-void render_mlt(const int sample_num, Color *image, const Ray &camera, const Vec &cx, const Vec &cy, const int width, const int height) {
-	KelemenMLT mlt;
+void render_mlt(const int mutation_per_pixel, Color *image, const Ray &camera, const Vec &cx, const Vec &cy, const int width, const int height) {
+	
+	
+#pragma omp parallel for schedule(dynamic, 1)
+	for (int y = 0; y < height; y ++) {	
+		std::cerr << "Rendering " << (100.0 * y / (height - 1)) << "%" << std::endl;
+		srand(y * y * y);
 
-	// たくさんパスを生成する。
-	// このパスからMLTで使う最初のパスを得る。(Markov Chain Monte Carloであった）
-	std::cout << "Generating seed paths..." << std::endl;
-	const int SeedPathMax = 100000;
-	std::vector<PathSample> seed_paths(SeedPathMax);
-	double sumI = 0.0;
-	mlt.large_step = 1;
-	for (int i = 0; i < SeedPathMax; i ++) {
-		mlt.InitUsedRandCoords();
-		PathSample sample = generate_new_path(camera, cx, cy, width, height, mlt);
-		mlt.global_time ++;
-		while (!mlt.primary_samples_stack.empty()) // スタック空にする
-			mlt.primary_samples_stack.pop();
+		// ピクセルごとにMLTすることにする
+		for (int x = 0; x < width; x ++) {
+			KelemenMLT mlt;
+			// たくさんパスを生成する。
+			// このパスからMLTで使う最初のパスを得る。(Markov Chain Monte Carloであった）
+			int SeedPathMax = mutation_per_pixel / 10;
+			if (SeedPathMax <= 0)
+				SeedPathMax = 1;
 
-		sumI += luminance(sample.F);
-		seed_paths[i] = sample;
-	}
+			std::vector<PathSample> seed_paths(SeedPathMax);
+			double sumI = 0.0;
+			mlt.large_step = 1;
+			for (int i = 0; i < SeedPathMax; i ++) {
+				mlt.InitUsedRandCoords();
+				PathSample sample = generate_new_path(camera, cx, cy, width, height, mlt, x, y);
+				mlt.global_time ++;
+				while (!mlt.primary_samples_stack.empty()) // スタック空にする 
+					mlt.primary_samples_stack.pop();
 
-	// 論文参照
-	const double b = sumI / SeedPathMax;
+				sumI += luminance(sample.F);
+				seed_paths[i] = sample;
+			}
+			
+			// 最初のパスを求める。輝度値に基づく重点サンプリングによって選んでいる。
+			const double rnd = rand01() * sumI;
+			int selecetd_path = 0;
+			double accumulated_importance = 0.0;
+			for (int i = 0; i < SeedPathMax; i ++) {
+				accumulated_importance += luminance(seed_paths[i].F);
+				if (accumulated_importance >= rnd) {
+					selecetd_path = i;
+					break;
+				}
+			}
+			
+			// 論文参照
+			const double b = sumI / SeedPathMax;
 
-	// 最初のパスを求める。輝度値に基づく重点サンプリングによって選んでいる。
-	const double rnd = rand01() * sumI;
-	int selecetd_path = 0;
-	double accumulated_importance = 0.0;
-	for (int i = 0; i < SeedPathMax; i ++) {
-		accumulated_importance += luminance(seed_paths[i].F);
-		if (accumulated_importance >= rnd) {
-			selecetd_path = i;
-			break;
-		}
-	}
+			const double p_large = 0.5;
+			const int M = mutation_per_pixel;
+			int accept = 0, reject = 0;	
+			PathSample old_path = seed_paths[selecetd_path];
 
-	// メトロポリス法
-	std::cout << "Metropolis..." << std::endl;
-	const double p_large = 0.5;
-	const int M = sample_num;
-	int accept = 0, reject = 0;
-	PathSample old_path = seed_paths[selecetd_path];
-	for (int i = 0; i < M; i ++) {
-		if ((i+1) % (M/10) == 0) {
-			std::cout << "*";
-		}
+			for (int i = 0; i < mutation_per_pixel; i ++) {
+				// この辺も全部論文と同じ（Next()）
+				mlt.large_step = rand01() < p_large;
+				mlt.InitUsedRandCoords();	
+				PathSample new_path = generate_new_path(camera, cx, cy, width, height, mlt, x, y);
 
-		// この辺も全部論文と同じ（Next()）
-		mlt.large_step = rand01() < p_large;
-		mlt.InitUsedRandCoords();	
-		PathSample new_path = generate_new_path(camera, cx, cy, width, height, mlt);
+				double a = std::min(1.0, luminance(new_path.F) / luminance(old_path.F));
+				if (a > 1.0) a = 1.0;
+				const double new_path_weight = (a + mlt.large_step) / (luminance(new_path.F) / b + p_large) / M;
+				const double old_path_weight = (1.0 - a) / (luminance(old_path.F) / b + p_large) / M;
 
-		double a = std::min(1.0, luminance(new_path.F) / luminance(old_path.F));
-		if (a > 1.0) a = 1.0;
-		const double new_path_weight = (a + mlt.large_step) / (luminance(new_path.F) / b + p_large) / M;
-		const double old_path_weight = (1.0 - a) / (luminance(old_path.F) / b + p_large) / M;
-
-		image[new_path.y * width + new_path.x] = image[new_path.y * width + new_path.x] + new_path.weight * new_path_weight * new_path.F;
-		image[old_path.y * width + old_path.x] = image[old_path.y * width + old_path.x] + old_path.weight * old_path_weight * old_path.F;
-
-		if (rand01() < a) { // 受理
-			accept ++;
-			old_path = new_path;
-			if (mlt.large_step)
-				mlt.large_step_time = mlt.global_time;
-			mlt.global_time ++;
-			while (!mlt.primary_samples_stack.empty()) // スタック空にする
-				mlt.primary_samples_stack.pop();
-		} else { // 棄却
-			reject ++;
-			int idx = mlt.used_rand_coords - 1;
-			while (!mlt.primary_samples_stack.empty()) {
-				mlt.primary_samples[idx --] = mlt.primary_samples_stack.top();
-				mlt.primary_samples_stack.pop();
+				image[new_path.y * width + new_path.x] = image[new_path.y * width + new_path.x] + new_path.weight * new_path_weight * new_path.F;
+				image[old_path.y * width + old_path.x] = image[old_path.y * width + old_path.x] + old_path.weight * old_path_weight * old_path.F;
+				
+				if (rand01() < a) { // 受理
+					accept ++;
+					old_path = new_path;
+					if (mlt.large_step)
+						mlt.large_step_time = mlt.global_time;
+					mlt.global_time ++;
+					while (!mlt.primary_samples_stack.empty()) // スタック空にする
+						mlt.primary_samples_stack.pop();
+				} else { // 棄却
+					reject ++;
+					int idx = mlt.used_rand_coords - 1;
+					while (!mlt.primary_samples_stack.empty()) {
+						mlt.primary_samples[idx --] = mlt.primary_samples_stack.top();
+						mlt.primary_samples_stack.pop();
+					}
+				}
 			}
 		}
 	}
-	std::cout << "Accept: " << accept << " Reject: " << reject << std::endl;
 }
 
 // *** .hdrフォーマットで出力するための関数 ***
@@ -537,34 +549,24 @@ void save_hdr_file(const std::string &filename, const Color* image, const int wi
 
 	fclose(fp);
 }
-
+#include <time.h>
 int main(int argc, char **argv) {
 	int width = 640;
 	int height = 480;
-	int mutation_per_pixel_per_oneimage = 8;
-	int split = 1; // OpenMPのスレッド数とかにするといい
-
-	std::cout << "Mutation per pixel per one image: " << mutation_per_pixel_per_oneimage << std::endl;
+	int mutation_per_pixel_per_oneimage = 32;
 
 	// カメラ位置
 	Ray camera(Vec(50.0, 52.0, 295.6), Normalize(Vec(0.0, -0.042612, -1.0)));
 	// シーン内でのスクリーンのx,y方向のベクトル
 	Vec cx = Vec(width * 0.5135 / height);
 	Vec cy = Normalize(Cross(cx, camera.dir)) * 0.5135;
-	Color *image = new Color[width * height * split];
-	Color *result = new Color[width * height];
+	Color *image = new Color[width * height];
 	
-// OpenMP
-#pragma omp parallel for schedule(dynamic, 1)
-	// split個のMLTを別々に実行し、その結果の平均をとる
-	for (int i = 0; i < split; i ++) {
-		srand(i * i);
-		render_mlt(width * height * mutation_per_pixel_per_oneimage, &image[i * width * height], camera, cx, cy, width, height);
-	}
-	for (int i = 0; i < split; i ++) {
-		for (int j = 0; j < width * height; j ++)
-			result[j] = result[j] + image[i * width * height + j] / split;
-	}
+	render_mlt(mutation_per_pixel_per_oneimage, image, camera, cx, cy, width, height);
+	
 	// .hdrフォーマットで出力
-	save_hdr_file(std::string("image.hdr"), result, width, height);
+	char buf[256];
+
+	sprintf(buf, "%04d_%d.hdr", mutation_per_pixel_per_oneimage, time(NULL));
+	save_hdr_file(buf, image, width, height);
 }
