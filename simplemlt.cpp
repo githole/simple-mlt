@@ -310,7 +310,7 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		const double cos2t = 1.0 - nnt * nnt * (1.0 - ddn * ddn);
 		
 		if (cos2t < 0.0) { // 全反射した
-			return direct_light + Multiply(obj.color, (radiance(reflection_ray, depth+1, mlt))) / russian_roulette_probability;
+			return (direct_light + Multiply(obj.color, (radiance(reflection_ray, depth+1, mlt)))) / russian_roulette_probability;
 		}
 		// 屈折していく方向
 		Vec tdir = Normalize(ray.dir * nnt - normal * (into ? 1.0 : -1.0) * (ddn * nnt + sqrt(cos2t)));
@@ -334,20 +334,19 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		// ロシアンルーレットで決定する。
 		if (depth > 2) {
 			if (mlt.PrimarySample() < probability) { // 反射
-				return direct_light + 
-					Multiply(obj.color, radiance(reflection_ray, depth+1, mlt) * Re)
+				return 
+					Multiply(obj.color, (direct_light + radiance(reflection_ray, depth+1, mlt)) * Re)
 					/ probability
 					/ russian_roulette_probability;
 			} else { // 屈折
-				return direct_light_refraction + 
-					Multiply(obj.color, radiance(refraction_ray, depth+1, mlt) * Tr)
+				return 
+					Multiply(obj.color, (direct_light_refraction + radiance(refraction_ray, depth+1, mlt)) * Tr)
 					/ (1.0 - probability) 
 					/ russian_roulette_probability;
 			}
 		} else { // 屈折と反射の両方を追跡
-			return direct_light + direct_light_refraction +
-				Multiply(obj.color, radiance(reflection_ray, depth+1, mlt) * Re
-				                  + radiance(refraction_ray, depth+1, mlt) * Tr) / russian_roulette_probability;
+			return Multiply(obj.color, (direct_light + radiance(reflection_ray, depth+1, mlt)) * Re
+				                  + (direct_light_refraction + radiance(refraction_ray, depth+1, mlt)) * Tr) / russian_roulette_probability;
 		}
 	} break;
 	}
