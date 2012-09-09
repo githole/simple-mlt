@@ -269,7 +269,7 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 			const double r2 = mlt.PrimarySample(), r2s = sqrt(r2);
 			Vec dir = Normalize((u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1.0 - r2)));
 
-			return direct_light + Multiply(obj.color, radiance(Ray(hitpoint, dir), depth+1, mlt)) / russian_roulette_probability;
+			return (direct_light + Multiply(obj.color, radiance(Ray(hitpoint, dir), depth+1, mlt))) / russian_roulette_probability;
 		} else if (depth == 0) {
 			return obj.emission;
 		} else
@@ -287,7 +287,7 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		if (lid == LightID)
 			direct_light = direct_radiance(hitpoint, orienting_normal, id, reflection_ray.org + lt * reflection_ray.dir);
 
-		return direct_light + Multiply(obj.color, radiance(reflection_ray, depth+1, mlt)) / russian_roulette_probability;
+		return (direct_light + Multiply(obj.color, radiance(reflection_ray, depth+1, mlt))) / russian_roulette_probability;
 	} break;
 	case REFRACTION: {
 		Ray reflection_ray = Ray(hitpoint, ray.dir - normal * 2.0 * Dot(normal, ray.dir));
@@ -334,13 +334,11 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		// ロシアンルーレットで決定する。
 		if (depth > 2) {
 			if (mlt.PrimarySample() < probability) { // 反射
-				return 
-					Multiply(obj.color, (direct_light + radiance(reflection_ray, depth+1, mlt)) * Re)
+				return  Multiply(obj.color, (direct_light + radiance(reflection_ray, depth+1, mlt)) * Re)
 					/ probability
 					/ russian_roulette_probability;
 			} else { // 屈折
-				return 
-					Multiply(obj.color, (direct_light_refraction + radiance(refraction_ray, depth+1, mlt)) * Tr)
+				return  Multiply(obj.color, (direct_light_refraction + radiance(refraction_ray, depth+1, mlt)) * Tr)
 					/ (1.0 - probability) 
 					/ russian_roulette_probability;
 			}
