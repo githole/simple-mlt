@@ -191,9 +191,15 @@ double luminance(const Color &color) {
 	return Dot(Vec(0.2126, 0.7152, 0.0722), color);
 }
 
-// 直接光を計算する
-Color direct_radiance(const Vec &v0, const Vec &normal, const int id, const Vec &light_pos) {
-	const Vec light_normal  = Normalize(light_pos - spheres[LightID].position);
+// 光源上の点をサンプリングして直接光を計算する
+Color direct_radiance_sample(const Vec &v0, const Vec &normal, const int id, KelemenMLT &mlt) {
+	// 光源上の一点をサンプリングする
+	const double r1 = 2 * PI * mlt.PrimarySample();
+	const double r2 = 1.0 - 2.0 * mlt.PrimarySample();
+	const Vec light_pos = spheres[LightID].position + ((spheres[LightID].radius + EPS) * Vec(sqrt(1.0 - r2*r2) * cos(r1), sqrt(1.0 - r2*r2) * sin(r1), r2));
+	
+	// サンプリングした点から計算
+	const Vec light_normal = Normalize(light_pos - spheres[LightID].position);
 	const Vec light_dir = Normalize(light_pos - v0);
 	const double dist2 = (light_pos - v0).LengthSquared();
 	const double dot0 = Dot(normal, light_dir);
@@ -201,24 +207,14 @@ Color direct_radiance(const Vec &v0, const Vec &normal, const int id, const Vec 
 
 	if (dot0 >= 0 && dot1 >= 0) {
 		const double G = dot0 * dot1 / dist2;
-		double t; // レイからシーンの交差位置までの距離
-		int id_;   // 交差したシーン内オブジェクトのID
+		double t; // レイからシーンの交差 位置までの距離
+		int id_; // 交差したシーン内オブジェクトのID
 		intersect_scene(Ray(v0, light_dir), &t, &id_);
 		if (fabs(sqrt(dist2) - t) < 1e-3) {		
 			return Multiply(spheres[id].color, spheres[LightID].emission) * (1.0 / PI) * G / (1.0 / (4.0 * PI * pow(spheres[LightID].radius, 2.0)));
 		}
 	}
 	return Color();
-}
-
-// 光源上の点をサンプリングして直接光を計算する
-Color direct_radiance_sample(const Vec &v0, const Vec &normal, const int id, KelemenMLT &mlt) {
-	// 光源上の一点をサンプリングする
-	const double r1 = 2 * PI *  mlt.PrimarySample();
-	const double r2 = 1.0 - 2.0 *  mlt.PrimarySample();
-	const Vec light_pos = spheres[LightID].position + ((spheres[LightID].radius + EPS) * Vec(sqrt(1.0 - r2*r2) * cos(r1), sqrt(1.0 - r2*r2) * sin(r1), r2));
-
-	return direct_radiance(v0, normal, id, light_pos);
 }
 
 // ray方向からの放射輝度を求める
@@ -278,27 +274,26 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 	case SPECULAR: {
 		// 完全鏡面なのでレイの反射方向は決定的。
 		// ロシアンルーレットの確率で除算するのは上と同じ。
-		// 直接光サンプリングする
 		double lt;
 		int lid;
 		Ray reflection_ray = Ray(hitpoint, ray.dir - normal * 2.0 * Dot(normal, ray.dir));
 		intersect_scene(reflection_ray, &lt, &lid);
 		Vec direct_light;
 		if (lid == LightID)
-			direct_light = direct_radiance(hitpoint, orienting_normal, id, reflection_ray.org + lt * reflection_ray.dir);
+			direct_light = spheres[LightID].emission;
 
 		return (direct_light + Multiply(obj.color, radiance(reflection_ray, depth+1, mlt))) / russian_roulette_probability;
 	} break;
 	case REFRACTION: {
 		Ray reflection_ray = Ray(hitpoint, ray.dir - normal * 2.0 * Dot(normal, ray.dir));
 		
-		// 反射方向からの直接光サンプリングする
+		// 反射方向からの直接光
 		double lt;
 		int lid;
 		intersect_scene(reflection_ray, &lt, &lid);
 		Vec direct_light;
 		if (lid == LightID)
-			direct_light = direct_radiance(hitpoint, orienting_normal, id, reflection_ray.org + lt * reflection_ray.dir);
+			direct_light = spheres[LightID].emission;
 
 		bool into = Dot(normal, orienting_normal) > 0.0; // レイがオブジェクトから出るのか、入るのか
 
@@ -323,12 +318,12 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		const double Tr = 1.0 - Re; // 屈折光の運ぶ光の量
 		const double probability  = 0.25 + 0.5 * Re;
 		
-		// 屈折方向からの直接光サンプリングする
+		// 屈折方向からの直接光
 		Ray refraction_ray = Ray(hitpoint, tdir);
 		intersect_scene(refraction_ray, &lt, &lid);
 		Vec direct_light_refraction;
 		if (lid == LightID)
-			direct_light_refraction = direct_radiance(hitpoint, -1.0 * orienting_normal, id, refraction_ray.org + lt * refraction_ray.dir);
+			direct_light_refraction = spheres[LightID].emission;
 
 		// 一定以上レイを追跡したら屈折と反射のどちらか一方を追跡する。（さもないと指数的にレイが増える）
 		// ロシアンルーレットで決定する。
@@ -396,8 +391,7 @@ PathSample generate_new_path(const Ray &camera, const Vec &cx, const Vec &cy, co
 
 // MLTする
 void render_mlt(const int mutation_per_pixel, Color *image, const Ray &camera, const Vec &cx, const Vec &cy, const int width, const int height) {
-	
-	
+
 #pragma omp parallel for schedule(dynamic, 1)
 	for (int y = 0; y < height; y ++) {	
 		std::cerr << "Rendering " << (100.0 * y / (height - 1)) << "%" << std::endl;
