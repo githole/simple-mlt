@@ -398,6 +398,8 @@ void render_mlt(const int mutation_per_pixel, Color *image, const Ray &camera, c
 		srand(y * y * y);
 
 		// ピクセルごとにMLTすることにする
+		// 本当はスクリーン上でパスを変異させるような大域的変異にしたほうがよい
+		// 修正はそんな難しくない
 		for (int x = 0; x < width; x ++) {
 			KelemenMLT mlt;
 			// たくさんパスを生成する。
