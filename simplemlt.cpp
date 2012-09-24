@@ -18,7 +18,21 @@ const double MaxDepth = 5;
 // *** その他の関数 ***
 inline double clamp(double x){ return x<0 ? 0 : x>1 ? 1 : x; } 
 inline int toInt(double x){ return int(pow(clamp(x),1/2.2)*255+.5); } 
-inline double rand01() { return (double)rand()/RAND_MAX; }
+
+// Xorshift
+// from Wikipedia
+unsigned int xor128(void) { 
+	static unsigned int x = 123456789;
+	static unsigned int y = 362436069;
+	static unsigned int z = 521288629;
+	static unsigned int w = 88675123; 
+	unsigned int t;
+
+	t = x ^ (x << 11);
+	x = y; y = z; z = w;
+	return w = (w ^ (w >> 19)) ^ (t ^ (t >> 8)); 
+}
+inline double rand01() { return (double)xor128()/(UINT_MAX); }
 
 // *** データ構造 ***
 struct Vec {
@@ -407,12 +421,10 @@ void render_mlt(const int mlt_num, const int mutation, Color *image, const Ray &
 	// MLTを別々に並列に走らせて結果をマージする
 
 	// OpenMP
-	omp_lock_t lock0;
-	omp_init_lock(&lock0);
-#pragma omp parallel for schedule(dynamic, 1)
+	// omp_lock_t lock0;
+	// omp_init_lock(&lock0);
+// #pragma omp parallel for schedule(dynamic, 1)
 	for (int mi = 0; mi < mlt_num; mi ++) {
-		srand(mi * mi * mi);
-
 		std::vector<Color> tmp_image;
 		tmp_image.resize(width * height);
 
@@ -495,14 +507,14 @@ void render_mlt(const int mlt_num, const int mutation, Color *image, const Ray &
 		}
 		
 		// OpenMP
-		omp_set_lock(&lock0);
+		// omp_set_lock(&lock0);
 		for(int i = 0; i < width * height; i ++) {
 			image[i] = image[i] + tmp_image[i] / mlt_num;
 		}
-		omp_unset_lock(&lock0);
+		// omp_unset_lock(&lock0);
 	}
 	// OpenMP
-	omp_destroy_lock(&lock0);
+	// omp_destroy_lock(&lock0);
 }
 
 // *** .hdrフォーマットで出力するための関数 ***
