@@ -481,7 +481,6 @@ void render_mlt(const int mlt_num, const int mutation, Color *image, const Ray &
 			PathSample new_path = generate_new_path(camera, cx, cy, width, height, mlt, -1, -1);
 
 			double a = std::min(1.0, luminance(new_path.F) / luminance(old_path.F));
-			if (a > 1.0) a = 1.0;
 			const double new_path_weight = (a + mlt.large_step) / (luminance(new_path.F) / b + p_large) / M;
 			const double old_path_weight = (1.0 - a) / (luminance(old_path.F) / b + p_large) / M;
 
