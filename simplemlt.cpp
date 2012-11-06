@@ -181,7 +181,7 @@ public:
 
 	// 通常の乱数のかわりにこれを使う
 	// 論文にのっているコードとほぼ同じ
-	inline double PrimarySample() {
+	inline double NextSample() {
 		if (primary_samples.size() <= used_rand_coords) {
 			primary_samples.resize(primary_samples.size() * 1.5); // 拡張する
 		}
@@ -220,8 +220,8 @@ double luminance(const Color &color) {
 // 光源上の点をサンプリングして直接光を計算する
 Color direct_radiance_sample(const Vec &v0, const Vec &normal, const int id, KelemenMLT &mlt) {
 	// 光源上の一点をサンプリングする
-	const double r1 = 2 * PI * mlt.PrimarySample();
-	const double r2 = 1.0 - 2.0 * mlt.PrimarySample();
+	const double r1 = 2 * PI * mlt.NextSample();
+	const double r2 = 1.0 - 2.0 * mlt.NextSample();
 	const Vec light_pos = spheres[LightID].position + ((spheres[LightID].radius + EPS) * Vec(sqrt(1.0 - r2*r2) * cos(r1), sqrt(1.0 - r2*r2) * sin(r1), r2));
 	
 	// サンプリングした点から計算
@@ -244,7 +244,7 @@ Color direct_radiance_sample(const Vec &v0, const Vec &normal, const int id, Kel
 }
 
 // ray方向からの放射輝度を求める
-// ただし、rand01()の代わりにKelemenMLT::PrimarySample()を使う。
+// ただし、rand01()の代わりにKelemenMLT::NextSample()を使う。
 // それ以外は普通のパストレースと同じ。
 // ただし、各点で明示的に光源の影響をサンプリングして求める。（そのほうがMLTとの相性がよい？）
 // あるいは双方向パストレーシングにするのもよいと思う。
@@ -263,7 +263,7 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 	double russian_roulette_probability = std::max(obj.color.x, std::max(obj.color.y, obj.color.z));
 	// 一定以上レイを追跡したらロシアンルーレットを実行し追跡を打ち切るかどうかを判断する
 	if (depth > MaxDepth) {
-		if (mlt.PrimarySample() >= russian_roulette_probability)
+		if (mlt.NextSample() >= russian_roulette_probability)
 			return Color();
 	} else
 		russian_roulette_probability = 1.0; // ロシアンルーレット実行しなかった
@@ -287,8 +287,8 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 				u = Normalize(Cross(Vec(1.0, 0.0, 0.0), w));
 			v = Cross(w, u);
 			// コサイン項を使った重点的サンプリング
-			const double r1 = 2 * PI * mlt.PrimarySample();
-			const double r2 = mlt.PrimarySample(), r2s = sqrt(r2);
+			const double r1 = 2 * PI * mlt.NextSample();
+			const double r2 = mlt.NextSample(), r2s = sqrt(r2);
 			Vec dir = Normalize((u * cos(r1) * r2s + v * sin(r1) * r2s + w * sqrt(1.0 - r2)));
 
 			return (direct_light + Multiply(obj.color, radiance(Ray(hitpoint, dir), depth+1, mlt))) / russian_roulette_probability;
@@ -354,7 +354,7 @@ Color radiance(const Ray &ray, const int depth, KelemenMLT &mlt) {
 		// 一定以上レイを追跡したら屈折と反射のどちらか一方を追跡する。（さもないと指数的にレイが増える）
 		// ロシアンルーレットで決定する。
 		if (depth > 2) {
-			if (mlt.PrimarySample() < probability) { // 反射
+			if (mlt.NextSample() < probability) { // 反射
 				return  Multiply(obj.color, (direct_light + radiance(reflection_ray, depth+1, mlt)) * Re)
 					/ probability
 					/ russian_roulette_probability;
@@ -389,23 +389,23 @@ PathSample generate_new_path(const Ray &camera, const Vec &cx, const Vec &cy, co
 	double weight = 4.0;
 	if (x < 0) {
 		weight *= width;
-		x = mlt.PrimarySample() * width;
+		x = mlt.NextSample() * width;
 		if (x == width)
 			x = 0;
 	}
 	if (y < 0) {
 		weight *= height;
-		y = mlt.PrimarySample() * height;
+		y = mlt.NextSample() * height;
 		if (y == height)
 			y = 0;
 	}
-	int sx = mlt.PrimarySample() < 0.5 ? 0 : 1;
-	int sy = mlt.PrimarySample() < 0.5 ? 0 : 1;
+	int sx = mlt.NextSample() < 0.5 ? 0 : 1;
+	int sy = mlt.NextSample() < 0.5 ? 0 : 1;
 	
 	// テントフィルターによってサンプリング
 	// ピクセル範囲で一様にサンプリングするのではなく、ピクセル中央付近にサンプルがたくさん集まるように偏りを生じさせる
-	const double r1 = 2.0 * mlt.PrimarySample(), dx = r1 < 1.0 ? sqrt(r1) - 1.0 : 1.0 - sqrt(2.0 - r1);
-	const double r2 = 2.0 * mlt.PrimarySample(), dy = r2 < 1.0 ? sqrt(r2) - 1.0 : 1.0 - sqrt(2.0 - r2);
+	const double r1 = 2.0 * mlt.NextSample(), dx = r1 < 1.0 ? sqrt(r1) - 1.0 : 1.0 - sqrt(2.0 - r1);
+	const double r2 = 2.0 * mlt.NextSample(), dy = r2 < 1.0 ? sqrt(r2) - 1.0 : 1.0 - sqrt(2.0 - r2);
 	Vec dir = cx * (((sx + 0.5 + dx) / 2.0 + x) / width - 0.5) +
 				cy * (((sy + 0.5 + dy) / 2.0 + y) / height- 0.5) + camera.dir;
 	const Ray ray = Ray(camera.org + dir * 130.0, Normalize(dir));
